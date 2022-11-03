@@ -80,6 +80,17 @@ QBCore.Functions.CreateCallback('qb-vehiclekeys:server:GetVehicleKeys', function
     cb(keysList)
 end)
 
+QBCore.Functions.CreateCallback('qb-vehiclekeys:server:checkOwned', function(source, cb, vehPlate)
+    local retval = false
+    for plate, citizenids in pairs (VehicleList) do
+        if plate == vehPlate then
+            retval = true
+        end
+    end
+    cb(retval)
+end)
+
+
 -----------------------
 ----   Functions   ----
 -----------------------

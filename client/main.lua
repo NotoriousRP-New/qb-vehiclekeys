@@ -75,7 +75,11 @@ CreateThread(function()
                 -- Parked car logic
                 elseif driver == 0 and entering ~= lastPickedVehicle and not HasKeys(plate) and not isTakingKeys then
                     if Config.LockNPCParkedCars then
-                        TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(entering), 2)
+                        QBCore.Functions.TriggerCallback('qb-vehiclekeys:server:checkOwned', function(result)
+                            if not result then
+                                TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(entering), 2)
+                            end
+                        end, plate)
                     else
                         TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(entering), 1)
                     end
@@ -223,10 +227,58 @@ RegisterNetEvent('qb-vehiclekeys:client:GiveKeys', function(id)
     end
 end)
 
-RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
-    LockpickDoor(isAdvanced)
-end)
+exports('lockpick', function(data, slot)
+    local ped = PlayerPedId()
+    local pos = GetEntityCoords(ped)
+    local vehicle = QBCore.Functions.GetClosestVehicle()
+    local canLockpick = true
 
+    if vehicle == nil or vehicle == 0 then canLockpick = false end
+    if HasKeys(QBCore.Functions.GetPlate(vehicle)) then canLockpick = false end
+    if #(pos - GetEntityCoords(vehicle)) > 2.5 then canLockpick = false end
+    if GetVehicleDoorLockStatus(vehicle) <= 0 then canLockpick = false end
+    for _, veh in ipairs(Config.ImmuneVehicles) do
+        if GetEntityModel(vehicle) == joaat(veh) then
+            canLockpick = false
+        end
+    end
+    local vehicleClass = GetVehicleClass(vehicle)
+    if canLockpick then
+        -- Triggers internal-code to correctly use items.
+        -- This adds security, removes the item on use, adds progressbar support, and is necessary for server callbacks.
+        exports.ox_inventory:useItem(data, function(data)
+            -- The server has verified the item can be used.
+            if data then
+                local success = false
+
+                if vehicleClass == 6 or vehicleCLass == 5 then -- sports/sportsclassics car
+                    success = lib.skillCheck({'medium', 'medium'})
+                elseif vehicleClass == 7 then --super car
+                    success = lib.skillCheck({'hard', 'hard'})
+                else -- other car
+                    success = lib.skillCheck({'easy', 'medium'})
+                end
+
+                if success then
+                    TriggerServerEvent('hud:server:GainStress', math.random(1, 3))
+                    lastPickedVehicle = vehicle
+                    if GetPedInVehicleSeat(vehicle, -1) == PlayerPedId() then
+                        TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', QBCore.Functions.GetPlate(vehicle))
+                    else
+                        lib.notify({ description = Lang:t("notify.vehicle_lockedpick"), type = 'success' })
+                        TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(vehicle), 1)
+                    end
+                    exports['ps-dispatch']:VehicleTheft(vehicle)
+                else
+                    TriggerServerEvent('hud:server:GainStress', math.random(2, 4))
+                end
+            end
+        end)
+    else
+        -- Don't use the item
+        lib.notify({type = 'error', description = 'You can\'t use this here'})
+    end
+end)
 
 -- Backwards Compatibility ONLY -- Remove at some point --
 RegisterNetEvent('vehiclekeys:client:SetOwner', function(plate)
@@ -388,51 +440,6 @@ function IsBlacklistedWeapon()
     return false
 end
 
-function LockpickDoor(isAdvanced)
-    local ped = PlayerPedId()
-    local pos = GetEntityCoords(ped)
-    local vehicle = QBCore.Functions.GetClosestVehicle()
-
-    if vehicle == nil or vehicle == 0 then return end
-    if HasKeys(QBCore.Functions.GetPlate(vehicle)) then return end
-    if #(pos - GetEntityCoords(vehicle)) > 2.5 then return end
-    if GetVehicleDoorLockStatus(vehicle) <= 0 then return end
-
-    usingAdvanced = isAdvanced
-    Config.LockPickDoorEvent()
-end
-
-function LockpickFinishCallback(success)
-    local vehicle = QBCore.Functions.GetClosestVehicle()
-
-    local chance = math.random()
-    if success then
-        TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
-        lastPickedVehicle = vehicle
-
-        if GetPedInVehicleSeat(vehicle, -1) == PlayerPedId() then
-            TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', QBCore.Functions.GetPlate(vehicle))
-        else
-            lib.notify({ description = Lang:t("notify.vehicle_lockedpick"), type = 'success' })
-            TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(vehicle), 1)
-        end
-
-    else
-        TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
-        AttemptPoliceAlert("steal")
-    end
-
-    if usingAdvanced then
-        if chance <= Config.RemoveLockpickAdvanced then
-            TriggerServerEvent("qb-vehiclekeys:server:breakLockpick", "advancedlockpick")
-        end
-    else
-        if chance <= Config.RemoveLockpickNormal then
-            TriggerServerEvent("qb-vehiclekeys:server:breakLockpick", "lockpick")
-        end
-    end
-end
-
 function Hotwire(vehicle, plate)
     local hotwireTime = math.random(Config.minHotwireTime, Config.maxHotwireTime)
     local ped = PlayerPedId()
@@ -465,7 +472,7 @@ function Hotwire(vehicle, plate)
         IsHotwiring = false
     end
     SetTimeout(10000, function()
-        AttemptPoliceAlert("steal")
+        exports['ps-dispatch']:VehicleTheft(vehicle)
     end)
     IsHotwiring = false
 end
@@ -536,7 +543,7 @@ function CarjackVehicle(target)
             end
             isCarjacking = false
             Wait(2000)
-            AttemptPoliceAlert("carjack")
+            exports['ps-dispatch']:CarJacking(vehicle)
             Wait(Config.DelayBetweenCarjackings)
             canCarjack = true
         end
@@ -548,21 +555,6 @@ function CarjackVehicle(target)
     end
 end
 
-function AttemptPoliceAlert(type)
-    if not AlertSend then
-        local chance = Config.PoliceAlertChance
-        if GetClockHours() >= 1 and GetClockHours() <= 6 then
-            chance = Config.PoliceNightAlertChance
-        end
-        if math.random() <= chance then
-           TriggerServerEvent('police:server:policeAlert', Lang:t("info.vehicle_theft") .. type)
-        end
-        AlertSend = true
-        SetTimeout(Config.AlertCooldown, function()
-            AlertSend = false
-        end)
-    end
-end
 
 function MakePedFlee(ped)
     SetPedFleeAttributes(ped, 0, 0)
